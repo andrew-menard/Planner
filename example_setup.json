@@ -1,0 +1,52 @@
+{
+  "units": [
+    {
+      "unit_name": "moth",
+      "icon_path": "moth.png",
+      "color_hex": "FF0000",
+      "q": -2,
+      "r": -1,
+      "rotation": 60.0
+    },
+    {
+      "unit_name": "moth",
+      "icon_path": "moth.png",
+      "color_hex": "FF0000",
+      "q": 0,
+      "r": -1,
+      "rotation": 60.0
+    },
+    {
+      "unit_name": "anchor",
+      "icon_path": "anchor.png",
+      "color_hex": "FF0000",
+      "q": 1,
+      "r": 2,
+      "rotation": 0.0
+    },
+    {
+      "unit_name": "moth",
+      "icon_path": "moth.png",
+      "color_hex": "FF0000",
+      "q": 2,
+      "r": -4,
+      "rotation": 0.0
+    },
+    {
+      "unit_name": "moth",
+      "icon_path": "moth.png",
+      "color_hex": "0000FF",
+      "q": 3,
+      "r": -1,
+      "rotation": 0.0
+    },
+    {
+      "unit_name": "moth",
+      "icon_path": "moth.png",
+      "color_hex": "0000FF",
+      "q": 3,
+      "r": 0,
+      "rotation": 300.0
+    }
+  ]
+}

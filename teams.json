@@ -6,6 +6,10 @@
 {
   "name":"BlueTeam",
   "color":"0000FF"
+},
+{
+  "name":"PurpleTeam",
+  "color":"800080"
 }
 
 ]

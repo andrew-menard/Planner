@@ -10,9 +10,13 @@ import os
 from PIL import Image, ImageTk, ImageDraw
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-HEX_SIZE    = 42    # circumradius (centre-to-vertex), px
-GRID_RADIUS = 5     # rings of hexes to display
-ICON_SIZE   = 38    # unit token diameter, px
+BASE_HEX    = 42     # circumradius at zoom 1.0
+GRID_RADIUS = 6      # rings of hexes to display
+BASE_ICON   = 38     # token diameter at zoom 1.0
+ZOOM_MIN    = 0.35
+ZOOM_MAX    = 3.00
+ZOOM_STEP   = 0.15
+GRID_PAD    = 3      # extra hex-radii of padding around the scrollregion
 
 # ── Hex geometry (flat-top orientation) ──────────────────────────────────────
 
@@ -152,8 +156,14 @@ class HexPlannerApp:
         self.dragging_unit: dict | None                = None
         self.drag_label:    tk.Label | None            = None
         self.drag_tk_img:   ImageTk.PhotoImage | None  = None
-        self.hi_id:         int | None                 = None   # selection highlight
-        self.drag_hi_id:    int | None                 = None   # hover highlight
+        self.hi_id:         int | None                 = None
+        self.drag_hi_id:    int | None                 = None
+        self._first_resize: bool                       = True
+
+        # Zoom state
+        self.zoom:      float = 1.0
+        self.hex_size:  float = float(BASE_HEX)
+        self.icon_size: int   = BASE_ICON
 
         self._load_data()
         self._build_ui()
@@ -176,27 +186,72 @@ class HexPlannerApp:
         outer = tk.Frame(self.root, bg=self.PAL["bg"])
         outer.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        # Canvas area
-        cf = tk.Frame(outer, bg=self.PAL["canvas"], bd=2, relief=tk.SUNKEN)
+        # Left column: zoom bar + canvas + status
+        cf = tk.Frame(outer, bg=self.PAL["bg"])
         cf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.canvas = tk.Canvas(cf, bg=self.PAL["canvas"], highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self._build_zoom_toolbar(cf)
+
+        # Canvas frame with scrollbars
+        inner = tk.Frame(cf, bg=self.PAL["canvas"], bd=2, relief=tk.SUNKEN)
+        inner.pack(fill=tk.BOTH, expand=True)
+        inner.rowconfigure(0, weight=1)
+        inner.columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(
+            inner, bg=self.PAL["canvas"], highlightthickness=0,
+            xscrollincrement=1, yscrollincrement=1,
+        )
+        xsb = tk.Scrollbar(inner, orient=tk.HORIZONTAL, command=self.canvas.xview,
+                            bg=self.PAL["sidebar"], troughcolor="#222")
+        ysb = tk.Scrollbar(inner, orient=tk.VERTICAL,   command=self.canvas.yview,
+                            bg=self.PAL["sidebar"], troughcolor="#222")
+        self.canvas.configure(xscrollcommand=xsb.set, yscrollcommand=ysb.set)
+
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
 
         # Status bar
         self.status_var = tk.StringVar(value="")
         tk.Label(cf, textvariable=self.status_var, bg="#111122", fg=self.PAL["sub"],
-                 font=("Consolas", 8), anchor=tk.W).pack(fill=tk.X, padx=4)
+                 font=("Consolas", 8), anchor=tk.W).pack(fill=tk.X)
 
-        self.canvas.bind("<Configure>",   self._on_resize)
-        self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
-        self.canvas.bind("<Motion>",        self._on_canvas_hover)
+        self.canvas.bind("<Configure>",          self._on_resize)
+        self.canvas.bind("<ButtonPress-1>",       self._on_canvas_press)
+        self.canvas.bind("<Motion>",              self._on_canvas_hover)
+        self.canvas.bind("<MouseWheel>",          self._on_mousewheel)
+        self.canvas.bind("<Shift-MouseWheel>",    self._on_mousewheel_h)
+        self.canvas.bind("<Control-MouseWheel>",  self._on_ctrl_wheel)
+        self.canvas.bind("<ButtonPress-2>",       self._on_pan_start)
+        self.canvas.bind("<B2-Motion>",           self._on_pan_motion)
 
         # Sidebar
         sb = tk.Frame(outer, bg=self.PAL["sidebar"], width=210, bd=2, relief=tk.RAISED)
         sb.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
         sb.pack_propagate(False)
         self._build_sidebar(sb)
+
+    def _build_zoom_toolbar(self, parent: tk.Frame):
+        P  = self.PAL
+        tb = tk.Frame(parent, bg=P["canvas"], height=28)
+        tb.pack(fill=tk.X, pady=(0, 2))
+
+        bf = dict(bg=P["button"], fg="#fff", font=("Helvetica", 11, "bold"),
+                  width=2, relief=tk.FLAT, padx=4, pady=0,
+                  activebackground="#6a6a8a", activeforeground="#fff")
+
+        tk.Label(tb, text="Zoom:", bg=P["canvas"], fg=P["sub"],
+                 font=("Helvetica", 9)).pack(side=tk.LEFT, padx=(8, 4), pady=2)
+        tk.Button(tb, text="−", command=self._zoom_out, **bf).pack(side=tk.LEFT, padx=2, pady=2)
+        self.zoom_var = tk.StringVar(value="100%")
+        tk.Label(tb, textvariable=self.zoom_var, bg=P["canvas"], fg=P["text"],
+                 font=("Consolas", 10), width=5).pack(side=tk.LEFT, padx=2)
+        tk.Button(tb, text="+", command=self._zoom_in, **bf).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(tb, text="Reset", command=self._zoom_reset,
+                  bg=P["canvas"], fg=P["sub"], font=("Helvetica", 8), relief=tk.FLAT,
+                  activebackground=P["button"], activeforeground="#fff",
+                  ).pack(side=tk.LEFT, padx=(6, 2), pady=2)
 
     def _sep(self, parent):
         tk.Frame(parent, bg="#555566", height=1).pack(fill=tk.X, padx=10, pady=6)
@@ -230,7 +285,7 @@ class HexPlannerApp:
         self._sep(parent)
 
         # ── Unit list ─────────────────────────────────────────────────────────
-        tk.Label(parent, text="UNITS  (drag to grid)", **head
+        tk.Label(parent, text="CREATE UNITS  (drag to grid)", **head
                  ).pack(pady=(0, 6), padx=10, anchor=tk.W)
 
         self._sb_icons: dict[str, ImageTk.PhotoImage] = {}
@@ -255,7 +310,7 @@ class HexPlannerApp:
         self._sep(parent)
 
         # ── Selected unit info ────────────────────────────────────────────────
-        tk.Label(parent, text="SELECTED", **head).pack(pady=(0, 4), padx=10, anchor=tk.W)
+        tk.Label(parent, text="MOVE SELECTED", **head).pack(pady=(0, 4), padx=10, anchor=tk.W)
         self.sel_var = tk.StringVar(value="—")
         tk.Label(parent, textvariable=self.sel_var, bg=P["sidebar"], fg=P["text"],
                  font=("Helvetica", 9), wraplength=180,
@@ -301,52 +356,138 @@ class HexPlannerApp:
         tk.Button(io_row, text="⬇ Import", command=self._import, **bio
                   ).pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-    # ── Canvas helpers ────────────────────────────────────────────────────────
+    # ── Scroll / zoom helpers ─────────────────────────────────────────────────
 
-    def _origin(self) -> tuple[float, float]:
-        return self.canvas.winfo_width() / 2.0, self.canvas.winfo_height() / 2.0
+    def _scrollregion(self) -> tuple[float, float, float, float]:
+        """Symmetric bounding box around the full grid in canvas coords."""
+        h   = self.hex_size
+        R   = GRID_RADIUS
+        pad = GRID_PAD * h
+        hw  = h * (1.5 * R + 1.0) + pad
+        hh  = h * math.sqrt(3) * (R + 0.5) + pad
+        return (-hw, -hh, hw, hh)
+
+    def _center_view(self):
+        """Scroll so that canvas coord (0, 0) — the grid centre — is centred in the viewport."""
+        sr = self._scrollregion()
+        tw = sr[2] - sr[0]
+        th = sr[3] - sr[1]
+        vw = self.canvas.winfo_width()
+        vh = self.canvas.winfo_height()
+        fx = (-sr[0] - vw / 2) / tw
+        fy = (-sr[1] - vh / 2) / th
+        self.canvas.xview_moveto(max(0.0, min(1.0 - vw / tw, fx)))
+        self.canvas.yview_moveto(max(0.0, min(1.0 - vh / th, fy)))
+
+    def _apply_zoom(self, focus_cx: float = 0.0, focus_cy: float = 0.0):
+        """Recompute sizes, redraw everything, and keep focus_cx/cy at the viewport centre."""
+        self.hex_size  = BASE_HEX * self.zoom
+        self.icon_size = max(8, int(BASE_ICON * self.zoom))
+        self.zoom_var.set(f"{int(round(self.zoom * 100))}%")
+
+        sr = self._scrollregion()
+        self.canvas.configure(scrollregion=sr)
+
+        self.canvas.delete("all")
+        self.hi_id      = None
+        self.drag_hi_id = None
+        self._draw_grid()
+        for u in self.placed:
+            u.canvas_id = None
+            self._render_unit(u)
+        self._refresh_hi()
+
+        # Scroll so focus point stays at viewport centre
+        tw = sr[2] - sr[0]
+        th = sr[3] - sr[1]
+        vw = self.canvas.winfo_width()
+        vh = self.canvas.winfo_height()
+        fx = (focus_cx - sr[0] - vw / 2) / tw
+        fy = (focus_cy - sr[1] - vh / 2) / th
+        self.canvas.xview_moveto(max(0.0, min(1.0 - vw / tw, fx)))
+        self.canvas.yview_moveto(max(0.0, min(1.0 - vh / th, fy)))
+
+    def _zoom_in(self):
+        cx, cy = self._viewport_centre_canvas()
+        self.zoom = min(ZOOM_MAX, round(self.zoom + ZOOM_STEP, 4))
+        self._apply_zoom(cx, cy)
+
+    def _zoom_out(self):
+        cx, cy = self._viewport_centre_canvas()
+        self.zoom = max(ZOOM_MIN, round(self.zoom - ZOOM_STEP, 4))
+        self._apply_zoom(cx, cy)
+
+    def _zoom_reset(self):
+        self.zoom = 1.0
+        self._apply_zoom()
+        self._center_view()
+
+    def _viewport_centre_canvas(self) -> tuple[float, float]:
+        vw = self.canvas.winfo_width()
+        vh = self.canvas.winfo_height()
+        return self.canvas.canvasx(vw / 2), self.canvas.canvasy(vh / 2)
+
+    # ── Canvas events ─────────────────────────────────────────────────────────
+
+    def _on_resize(self, _event):
+        if self._first_resize:
+            self._first_resize = False
+            sr = self._scrollregion()
+            self.canvas.configure(scrollregion=sr)
+            self._draw_grid()
+            self._center_view()
+        # After first draw, the grid lives in canvas coords — no redraw needed on resize.
+
+    def _on_mousewheel(self, event: tk.Event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_mousewheel_h(self, event: tk.Event):
+        self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_ctrl_wheel(self, event: tk.Event):
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        if event.delta > 0:
+            self.zoom = min(ZOOM_MAX, round(self.zoom + ZOOM_STEP, 4))
+        else:
+            self.zoom = max(ZOOM_MIN, round(self.zoom - ZOOM_STEP, 4))
+        self._apply_zoom(cx, cy)
+
+    def _on_pan_start(self, event: tk.Event):
+        self.canvas.scan_mark(event.x, event.y)
+
+    def _on_pan_motion(self, event: tk.Event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    # ── Draw helpers ──────────────────────────────────────────────────────────
 
     def _draw_grid(self):
-        ox, oy = self._origin()
+        h         = self.hex_size
+        font_size = max(5, int(7 * self.zoom))
         for q in range(-GRID_RADIUS, GRID_RADIUS + 1):
             for r in range(-GRID_RADIUS, GRID_RADIUS + 1):
                 s = -q - r
                 if max(abs(q), abs(r), abs(s)) > GRID_RADIUS:
                     continue
-                cx, cy = hex_to_pixel(q, r, HEX_SIZE)
-                cx += ox;  cy += oy
-                pts = flat_hex_corners(cx, cy, HEX_SIZE)
+                cx, cy = hex_to_pixel(q, r, h)
+                pts = flat_hex_corners(cx, cy, h)
                 self.canvas.create_polygon(
                     pts, outline=self.PAL["hex_o"], fill=self.PAL["hex_f"],
                     width=1, tags="grid")
                 self.canvas.create_text(
-                    cx, cy + HEX_SIZE * 0.60,
+                    cx, cy + h * 0.60,
                     text=f"{q},{r},{s}", fill=self.PAL["sub"],
-                    font=("Helvetica", 7), tags="grid")
-
-    def _on_resize(self, _event):
-        self.canvas.delete("grid")
-        self._draw_grid()
-        self._redraw_units()
-
-    def _redraw_units(self):
-        for u in self.placed:
-            if u.canvas_id:
-                self.canvas.delete(u.canvas_id)
-                u.canvas_id = None
-            self._render_unit(u)
-        self._refresh_hi()
+                    font=("Helvetica", font_size), tags="grid")
 
     def _render_unit(self, unit: PlacedUnit):
-        ox, oy = self._origin()
-        cx, cy = hex_to_pixel(unit.q, unit.r, HEX_SIZE)
-        cx += ox;  cy += oy
+        cx, cy = hex_to_pixel(unit.q, unit.r, self.hex_size)
+        sz     = self.icon_size
         img    = make_token(os.path.join(SCRIPT_DIR, unit.icon_path),
-                            unit.color_hex, ICON_SIZE, unit.rotation)
+                            unit.color_hex, sz, unit.rotation)
         tki    = ImageTk.PhotoImage(img)
         cid    = self.canvas.create_image(cx, cy, image=tki, tags="unit")
         unit.canvas_id = cid
-        unit.tk_image  = tki            # keep ref so GC doesn't collect it
+        unit.tk_image  = tki
 
     def _refresh_hi(self):
         if self.hi_id:
@@ -354,27 +495,26 @@ class HexPlannerApp:
             self.hi_id = None
         if not self.selected:
             return
-        ox, oy = self._origin()
-        cx, cy = hex_to_pixel(self.selected.q, self.selected.r, HEX_SIZE)
-        cx += ox;  cy += oy
-        pts = flat_hex_corners(cx, cy, HEX_SIZE - 3)
+        h = self.hex_size
+        cx, cy = hex_to_pixel(self.selected.q, self.selected.r, h)
+        pts = flat_hex_corners(cx, cy, h - 3)
         self.hi_id = self.canvas.create_polygon(
             pts, outline=self.PAL["accent"], fill="", width=3, tags="hi")
-        self.canvas.tag_raise("hi")   # keep yellow outline above unit tokens
-
-    # ── Canvas events ─────────────────────────────────────────────────────────
+        self.canvas.tag_raise("hi")
 
     def _on_canvas_press(self, event: tk.Event):
-        ox, oy  = self._origin()
-        q, r, _ = nearest_hex(event.x - ox, event.y - oy, HEX_SIZE)
-        hit     = next((u for u in self.placed if u.q == q and u.r == r), None)
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        q, r, _ = nearest_hex(cx, cy, self.hex_size)
+        hit = next((u for u in self.placed if u.q == q and u.r == r), None)
         self.selected = hit
         self._refresh_hi()
         self._update_sel()
 
     def _on_canvas_hover(self, event: tk.Event):
-        ox, oy  = self._origin()
-        q, r, s = nearest_hex(event.x - ox, event.y - oy, HEX_SIZE)
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        q, r, s = nearest_hex(cx, cy, self.hex_size)
         if in_grid(q, r):
             self.status_var.set(f"hex  q={q}  r={r}  s={s}")
         else:
@@ -387,18 +527,17 @@ class HexPlannerApp:
         else:
             self.sel_var.set("—")
 
-    # ── Drag from sidebar ─────────────────────────────────────────────────────
-
     def _start_drag(self, event: tk.Event, unit: dict):
         self.dragging_unit = unit
-        img            = make_token(os.path.join(SCRIPT_DIR, unit["icon"]),
-                                    self.selected_color, ICON_SIZE)
+        img = make_token(os.path.join(SCRIPT_DIR, unit["icon"]),
+                         self.selected_color, self.icon_size)
         self.drag_tk_img = ImageTk.PhotoImage(img)
+        sz = self.icon_size
         rx = event.x_root - self.root.winfo_rootx()
         ry = event.y_root - self.root.winfo_rooty()
         self.drag_label = tk.Label(self.root, image=self.drag_tk_img,
                                    bd=0, bg=self.PAL["bg"], cursor="fleur")
-        self.drag_label.place(x=rx - ICON_SIZE // 2, y=ry - ICON_SIZE // 2)
+        self.drag_label.place(x=rx - sz // 2, y=ry - sz // 2)
         self.drag_label.lift()
         self.root.bind("<Motion>",          self._on_drag_motion)
         self.root.bind("<ButtonRelease-1>", self._on_drag_release)
@@ -406,25 +545,24 @@ class HexPlannerApp:
     def _on_drag_motion(self, event: tk.Event):
         if not self.drag_label:
             return
+        sz = self.icon_size
         rx = event.x_root - self.root.winfo_rootx()
         ry = event.y_root - self.root.winfo_rooty()
-        self.drag_label.place(x=rx - ICON_SIZE // 2, y=ry - ICON_SIZE // 2)
+        self.drag_label.place(x=rx - sz // 2, y=ry - sz // 2)
 
-        # Snap-preview highlight on canvas
         if self.drag_hi_id:
             self.canvas.delete(self.drag_hi_id)
             self.drag_hi_id = None
-        cx, cy = self._event_canvas_pos(event)
-        if cx is not None:
-            ox, oy  = self._origin()
-            q, r, _ = nearest_hex(cx - ox, cy - oy, HEX_SIZE)
+        ccx, ccy = self._root_to_canvas(event.x_root, event.y_root)
+        if ccx is not None:
+            h = self.hex_size
+            q, r, _ = nearest_hex(ccx, ccy, h)
             if in_grid(q, r):
-                hx, hy = hex_to_pixel(q, r, HEX_SIZE)
-                hx += ox;  hy += oy
-                pts = flat_hex_corners(hx, hy, HEX_SIZE - 2)
+                hx, hy = hex_to_pixel(q, r, h)
+                pts = flat_hex_corners(hx, hy, h - 2)
                 self.drag_hi_id = self.canvas.create_polygon(
                     pts, outline=self.PAL["accent"],
-                    fill="#ffcc44", width=2, tags="draghighlight")
+                    fill="#ffcc4422", width=2, tags="draghighlight")
 
     def _on_drag_release(self, event: tk.Event):
         self.root.unbind("<Motion>")
@@ -440,32 +578,31 @@ class HexPlannerApp:
         if not self.dragging_unit:
             return
 
-        cx, cy = self._event_canvas_pos(event)
-        unit   = self.dragging_unit
+        ccx, ccy = self._root_to_canvas(event.x_root, event.y_root)
+        unit = self.dragging_unit
         self.dragging_unit = None
 
-        if cx is None:
+        if ccx is None:
             return
-        ox, oy  = self._origin()
-        q, r, _ = nearest_hex(cx - ox, cy - oy, HEX_SIZE)
+        q, r, _ = nearest_hex(ccx, ccy, self.hex_size)
         if not in_grid(q, r):
             return
         if any(u.q == q and u.r == r for u in self.placed):
-            return     # hex occupied — silently reject
+            return
 
         pu = PlacedUnit(unit["name"], unit["icon"], self.selected_color, q, r)
         self.placed.append(pu)
         self._render_unit(pu)
 
-    def _event_canvas_pos(self, event: tk.Event) -> tuple[float | None, float | None]:
-        """Return canvas-local (x, y) if the event is over the canvas, else (None, None)."""
+    def _root_to_canvas(self, rx: int, ry: int) -> tuple[float | None, float | None]:
+        """Convert root-window pixel coords to canvas coords; None if not over canvas."""
         cx0 = self.canvas.winfo_rootx()
         cy0 = self.canvas.winfo_rooty()
         cw  = self.canvas.winfo_width()
         ch  = self.canvas.winfo_height()
-        ex, ey = event.x_root, event.y_root
-        if cx0 <= ex <= cx0 + cw and cy0 <= ey <= cy0 + ch:
-            return float(ex - cx0), float(ey - cy0)
+        if cx0 <= rx <= cx0 + cw and cy0 <= ry <= cy0 + ch:
+            return (self.canvas.canvasx(rx - cx0),
+                    self.canvas.canvasy(ry - cy0))
         return None, None
 
     # ── Selection actions ─────────────────────────────────────────────────────
@@ -521,6 +658,10 @@ class HexPlannerApp:
         self.root.bind("r",           lambda _: self._rotate( 30))
         self.root.bind("R",           lambda _: self._rotate(-30))
         self.root.bind("<Escape>",    lambda _: self._deselect())
+        self.root.bind("+",           lambda _: self._zoom_in())
+        self.root.bind("=",           lambda _: self._zoom_in())
+        self.root.bind("-",           lambda _: self._zoom_out())
+        self.root.bind("0",           lambda _: self._zoom_reset())
 
     def _deselect(self):
         self.selected = None
