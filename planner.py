@@ -593,6 +593,9 @@ class HexPlannerApp:
         pu = PlacedUnit(unit["name"], unit["icon"], self.selected_color, q, r)
         self.placed.append(pu)
         self._render_unit(pu)
+        self.selected = pu
+        self._refresh_hi()
+        self._update_sel()
 
     def _root_to_canvas(self, rx: int, ry: int) -> tuple[float | None, float | None]:
         """Convert root-window pixel coords to canvas coords; None if not over canvas."""
