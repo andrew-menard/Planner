@@ -1,0 +1,11 @@
+[
+  {
+  "name":"RedTeam",
+"color":"FF0000"
+  },
+{
+  "name":"BlueTeam",
+  "color":"0000FF"
+}
+
+]
