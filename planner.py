@@ -2,7 +2,7 @@
 """Hex Grid Planner — place, move, and rotate unit icons on a cubic-coordinate hex grid."""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 import json
 import math
 import os
@@ -100,17 +100,19 @@ def make_token(icon_path: str, color_hex: str, size: int,
 
 class PlacedUnit:
     __slots__ = ("unit_name", "icon_path", "color_hex", "q", "r",
-                 "rotation", "canvas_id", "tk_image")
+                 "rotation", "label", "canvas_id", "label_id", "tk_image")
 
     def __init__(self, unit_name: str, icon_path: str, color_hex: str,
-                 q: int, r: int, rotation: float = 0.0):
+                 q: int, r: int, rotation: float = 0.0, label: str = ""):
         self.unit_name  = unit_name
         self.icon_path  = icon_path     # relative to SCRIPT_DIR
         self.color_hex  = color_hex     # 6-char hex, no '#'
         self.q          = q
         self.r          = r
         self.rotation   = rotation
+        self.label      = label
         self.canvas_id: int | None               = None
+        self.label_id:  int | None               = None
         self.tk_image:  ImageTk.PhotoImage | None = None
 
     @property
@@ -120,12 +122,12 @@ class PlacedUnit:
     def to_dict(self) -> dict:
         return dict(unit_name=self.unit_name, icon_path=self.icon_path,
                     color_hex=self.color_hex, q=self.q, r=self.r,
-                    rotation=self.rotation)
+                    rotation=self.rotation, label=self.label)
 
     @classmethod
     def from_dict(cls, d: dict) -> "PlacedUnit":
         return cls(d["unit_name"], d["icon_path"], d["color_hex"],
-                   d["q"], d["r"], d.get("rotation", 0.0))
+                   d["q"], d["r"], d.get("rotation", 0.0), d.get("label", ""))
 
 
 # ── Application ───────────────────────────────────────────────────────────────
@@ -397,6 +399,7 @@ class HexPlannerApp:
         self._draw_grid()
         for u in self.placed:
             u.canvas_id = None
+            u.label_id  = None
         seen: set[tuple[int, int]] = set()
         for u in self.placed:
             if (u.q, u.r) not in seen:
@@ -496,7 +499,7 @@ class HexPlannerApp:
         cols  = math.ceil(math.sqrt(n))
         rows  = math.ceil(n / cols)
         # Available diameter ≈ inscribed-circle diameter * 0.85
-        avail = self.hex_size * math.sqrt(3) * 0.85
+        avail = self.hex_size * math.sqrt(3) * 0.65
         sz    = max(8, int(avail / cols))
         spacing = sz * 1.05
         positions: list[tuple[float, float]] = []
@@ -517,6 +520,9 @@ class HexPlannerApp:
             if u.canvas_id is not None:
                 self.canvas.delete(u.canvas_id)
                 u.canvas_id = None
+            if u.label_id is not None:
+                self.canvas.delete(u.label_id)
+                u.label_id = None
         if not units:
             return
         cx, cy   = hex_to_pixel(q, r, self.hex_size)
@@ -538,6 +544,16 @@ class HexPlannerApp:
         unit.canvas_id = cid
         unit.tk_image  = tki
 
+        if unit.label:
+            font_size  = max(6, int(sz * 0.2))
+            fill_color = f"#{unit.color_hex}"
+            lid = self.canvas.create_text(
+                cx, cy + sz // 2 + font_size*0.7,
+                text=unit.label, fill=fill_color,
+                font=("Helvetica", font_size, "bold"),
+                tags="unitlabel")
+            unit.label_id = lid
+
     def _refresh_hi(self):
         if self.hi_id:
             self.canvas.delete(self.hi_id)
@@ -550,6 +566,8 @@ class HexPlannerApp:
         self.hi_id = self.canvas.create_polygon(
             pts, outline=self.PAL["accent"], fill="", width=3, tags="hi")
         self.canvas.tag_raise("hi")
+        self.canvas.tag_raise("unit")
+        self.canvas.tag_raise("unitlabel")
 
     def _on_canvas_press(self, event: tk.Event):
         cx = self.canvas.canvasx(event.x)
@@ -710,7 +728,12 @@ class HexPlannerApp:
         if not in_grid(q, r):
             return
 
-        pu = PlacedUnit(unit["name"], unit["icon"], self.selected_color, q, r)
+        label = simpledialog.askstring(
+            "Unit Name", f"Enter a name for this {unit['name']}:",
+            parent=self.root) or ""
+
+        pu = PlacedUnit(unit["name"], unit["icon"], self.selected_color, q, r,
+                        label=label)
         self.placed.append(pu)
         self._rerender_hex(q, r)
         self.selected = pu
@@ -761,6 +784,9 @@ class HexPlannerApp:
         if self.selected.canvas_id:
             self.canvas.delete(self.selected.canvas_id)
             self.selected.canvas_id = None
+        if self.selected.label_id:
+            self.canvas.delete(self.selected.label_id)
+            self.selected.label_id = None
         self.placed.remove(self.selected)
         if self.hi_id:
             self.canvas.delete(self.hi_id)
