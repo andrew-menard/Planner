@@ -562,7 +562,7 @@ class HexPlannerApp:
                 pts = flat_hex_corners(hx, hy, h - 2)
                 self.drag_hi_id = self.canvas.create_polygon(
                     pts, outline=self.PAL["accent"],
-                    fill="#ffcc4422", width=2, tags="draghighlight")
+                    fill="#ffcc44", width=2, tags="draghighlight")
 
     def _on_drag_release(self, event: tk.Event):
         self.root.unbind("<Motion>")
