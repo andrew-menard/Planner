@@ -397,7 +397,11 @@ class HexPlannerApp:
         self._draw_grid()
         for u in self.placed:
             u.canvas_id = None
-            self._render_unit(u)
+        seen: set[tuple[int, int]] = set()
+        for u in self.placed:
+            if (u.q, u.r) not in seen:
+                seen.add((u.q, u.r))
+                self._rerender_hex(u.q, u.r)
         self._refresh_hi()
 
         # Scroll so focus point stays at viewport centre
@@ -482,13 +486,55 @@ class HexPlannerApp:
                     text=f"{q},{r},{s}", fill=self.PAL["sub"],
                     font=("Helvetica", font_size), tags="grid")
 
-    def _render_unit(self, unit: PlacedUnit):
-        cx, cy = hex_to_pixel(unit.q, unit.r, self.hex_size)
-        sz     = self.icon_size
-        img    = make_token(os.path.join(SCRIPT_DIR, unit.icon_path),
-                            unit.color_hex, sz, unit.rotation)
-        tki    = ImageTk.PhotoImage(img)
-        cid    = self.canvas.create_image(cx, cy, image=tki, tags="unit")
+    def _token_layout(self, n: int) -> tuple[int, list[tuple[float, float]]]:
+        """Return (token_px_size, [(dx,dy),...]) for n tokens sharing a hex."""
+        if n == 0:
+            return self.icon_size, []
+        if n == 1:
+            return self.icon_size, [(0.0, 0.0)]
+        # Pack into a cols×rows grid centred at the hex centre.
+        cols  = math.ceil(math.sqrt(n))
+        rows  = math.ceil(n / cols)
+        # Available diameter ≈ inscribed-circle diameter * 0.85
+        avail = self.hex_size * math.sqrt(3) * 0.85
+        sz    = max(8, int(avail / cols))
+        spacing = sz * 1.05
+        positions: list[tuple[float, float]] = []
+        idx = 0
+        for row in range(rows):
+            count = min(cols, n - idx)
+            oy    = (row - (rows - 1) / 2.0) * spacing
+            for col in range(count):
+                ox = (col - (count - 1) / 2.0) * spacing
+                positions.append((ox, oy))
+                idx += 1
+        return sz, positions
+
+    def _rerender_hex(self, q: int, r: int):
+        """Delete and redraw every unit on hex (q, r) with stacking layout."""
+        units = [u for u in self.placed if u.q == q and u.r == r]
+        for u in units:
+            if u.canvas_id is not None:
+                self.canvas.delete(u.canvas_id)
+                u.canvas_id = None
+        if not units:
+            return
+        cx, cy   = hex_to_pixel(q, r, self.hex_size)
+        sz, offs = self._token_layout(len(units))
+        for u, (dx, dy) in zip(units, offs):
+            self._render_unit(u, cx + dx, cy + dy, sz)
+
+    def _render_unit(self, unit: PlacedUnit,
+                     cx: float | None = None, cy: float | None = None,
+                     sz: int | None = None):
+        if cx is None or cy is None:
+            cx, cy = hex_to_pixel(unit.q, unit.r, self.hex_size)
+        if sz is None:
+            sz = self.icon_size
+        img = make_token(os.path.join(SCRIPT_DIR, unit.icon_path),
+                         unit.color_hex, sz, unit.rotation)
+        tki = ImageTk.PhotoImage(img)
+        cid = self.canvas.create_image(cx, cy, image=tki, tags="unit")
         unit.canvas_id = cid
         unit.tk_image  = tki
 
@@ -509,7 +555,17 @@ class HexPlannerApp:
         cx = self.canvas.canvasx(event.x)
         cy = self.canvas.canvasy(event.y)
         q, r, _ = nearest_hex(cx, cy, self.hex_size)
-        hit = next((u for u in self.placed if u.q == q and u.r == r), None)
+        stack = [u for u in self.placed if u.q == q and u.r == r]
+
+        if not stack:
+            hit = None
+        elif self.selected in stack:
+            # Cycle to the next unit in the stack
+            idx = stack.index(self.selected)
+            hit = stack[(idx + 1) % len(stack)]
+        else:
+            hit = stack[0]
+
         self.selected = hit
         self._refresh_hi()
         self._update_sel()
@@ -547,12 +603,9 @@ class HexPlannerApp:
         if in_grid(q, r) and not (q == self.moving_unit.q and r == self.moving_unit.r):
             hx, hy = hex_to_pixel(q, r, h)
             pts = flat_hex_corners(hx, hy, h - 2)
-            occupied = any(u.q == q and u.r == r
-                           for u in self.placed if u is not self.moving_unit)
-            colour = "#ff444422" if occupied else "#ffcc4422"
             self.drag_hi_id = self.canvas.create_polygon(
                 pts, outline=self.PAL["accent"],
-                fill=colour, width=2, tags="draghighlight")
+                fill="#ffcc4422", width=2, tags="draghighlight")
 
     def _on_canvas_move_drop(self, event: tk.Event):
         if self.drag_label:
@@ -570,16 +623,13 @@ class HexPlannerApp:
         ccx = self.canvas.canvasx(event.x)
         ccy = self.canvas.canvasy(event.y)
         q, r, _ = nearest_hex(ccx, ccy, self.hex_size)
-        if (not in_grid(q, r)
-                or (q == unit.q and r == unit.r)
-                or any(u.q == q and u.r == r for u in self.placed if u is not unit)):
-            return  # off-grid, same hex, or occupied — cancel
+        if not in_grid(q, r) or (q == unit.q and r == unit.r):
+            return  # off-grid or same hex — cancel
 
+        old_q, old_r = unit.q, unit.r
         unit.q, unit.r = q, r
-        if unit.canvas_id:
-            self.canvas.delete(unit.canvas_id)
-            unit.canvas_id = None
-        self._render_unit(unit)
+        self._rerender_hex(old_q, old_r)
+        self._rerender_hex(q, r)
         self._refresh_hi()
         self._update_sel()
 
@@ -659,12 +709,10 @@ class HexPlannerApp:
         q, r, _ = nearest_hex(ccx, ccy, self.hex_size)
         if not in_grid(q, r):
             return
-        if any(u.q == q and u.r == r for u in self.placed):
-            return
 
         pu = PlacedUnit(unit["name"], unit["icon"], self.selected_color, q, r)
         self.placed.append(pu)
-        self._render_unit(pu)
+        self._rerender_hex(q, r)
         self.selected = pu
         self._refresh_hi()
         self._update_sel()
@@ -691,14 +739,10 @@ class HexPlannerApp:
         nq, nr = self.selected.q + dq, self.selected.r + dr
         if not in_grid(nq, nr):
             return
-        if any(u.q == nq and u.r == nr
-               for u in self.placed if u is not self.selected):
-            return
+        old_q, old_r = self.selected.q, self.selected.r
         self.selected.q, self.selected.r = nq, nr
-        if self.selected.canvas_id:
-            self.canvas.delete(self.selected.canvas_id)
-            self.selected.canvas_id = None
-        self._render_unit(self.selected)
+        self._rerender_hex(old_q, old_r)
+        self._rerender_hex(nq, nr)
         self._refresh_hi()
         self._update_sel()
 
@@ -706,23 +750,23 @@ class HexPlannerApp:
         if not self.selected:
             return
         self.selected.rotation = (self.selected.rotation + degrees) % 360.0
-        if self.selected.canvas_id:
-            self.canvas.delete(self.selected.canvas_id)
-            self.selected.canvas_id = None
-        self._render_unit(self.selected)
+        self._rerender_hex(self.selected.q, self.selected.r)
         self._refresh_hi()
         self._update_sel()
 
     def _delete(self):
         if not self.selected:
             return
+        q, r = self.selected.q, self.selected.r
         if self.selected.canvas_id:
             self.canvas.delete(self.selected.canvas_id)
+            self.selected.canvas_id = None
         self.placed.remove(self.selected)
         if self.hi_id:
             self.canvas.delete(self.hi_id)
             self.hi_id = None
         self.selected = None
+        self._rerender_hex(q, r)
         self._update_sel()
 
     # ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -788,9 +832,14 @@ class HexPlannerApp:
             try:
                 pu = PlacedUnit.from_dict(item)
                 self.placed.append(pu)
-                self._render_unit(pu)
             except Exception:
                 errors += 1
+
+        seen: set[tuple[int, int]] = set()
+        for u in self.placed:
+            if (u.q, u.r) not in seen:
+                seen.add((u.q, u.r))
+                self._rerender_hex(u.q, u.r)
 
         msg = f"Loaded {len(self.placed)} unit(s)."
         if errors:
