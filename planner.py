@@ -158,6 +158,7 @@ class HexPlannerApp:
         self.drag_tk_img:   ImageTk.PhotoImage | None  = None
         self.hi_id:         int | None                 = None
         self.drag_hi_id:    int | None                 = None
+        self.moving_unit:   PlacedUnit | None          = None
         self._first_resize: bool                       = True
 
         # Zoom state
@@ -219,6 +220,8 @@ class HexPlannerApp:
 
         self.canvas.bind("<Configure>",          self._on_resize)
         self.canvas.bind("<ButtonPress-1>",       self._on_canvas_press)
+        self.canvas.bind("<B1-Motion>",           self._on_canvas_move_drag)
+        self.canvas.bind("<ButtonRelease-1>",     self._on_canvas_move_drop)
         self.canvas.bind("<Motion>",              self._on_canvas_hover)
         self.canvas.bind("<MouseWheel>",          self._on_mousewheel)
         self.canvas.bind("<Shift-MouseWheel>",    self._on_mousewheel_h)
@@ -508,6 +511,75 @@ class HexPlannerApp:
         q, r, _ = nearest_hex(cx, cy, self.hex_size)
         hit = next((u for u in self.placed if u.q == q and u.r == r), None)
         self.selected = hit
+        self._refresh_hi()
+        self._update_sel()
+
+        # Begin move-drag if a placed unit was clicked
+        self.moving_unit = None
+        if hit:
+            self.moving_unit = hit
+            img = make_token(os.path.join(SCRIPT_DIR, hit.icon_path),
+                             hit.color_hex, self.icon_size, hit.rotation)
+            self.drag_tk_img = ImageTk.PhotoImage(img)
+            sz = self.icon_size
+            rx = event.x_root - self.root.winfo_rootx()
+            ry = event.y_root - self.root.winfo_rooty()
+            self.drag_label = tk.Label(self.root, image=self.drag_tk_img,
+                                       bd=0, bg=self.PAL["bg"], cursor="fleur")
+            self.drag_label.place(x=rx - sz // 2, y=ry - sz // 2)
+            self.drag_label.lift()
+
+    def _on_canvas_move_drag(self, event: tk.Event):
+        if not self.moving_unit or not self.drag_label:
+            return
+        sz = self.icon_size
+        rx = event.x_root - self.root.winfo_rootx()
+        ry = event.y_root - self.root.winfo_rooty()
+        self.drag_label.place(x=rx - sz // 2, y=ry - sz // 2)
+
+        if self.drag_hi_id:
+            self.canvas.delete(self.drag_hi_id)
+            self.drag_hi_id = None
+        ccx = self.canvas.canvasx(event.x)
+        ccy = self.canvas.canvasy(event.y)
+        h = self.hex_size
+        q, r, _ = nearest_hex(ccx, ccy, h)
+        if in_grid(q, r) and not (q == self.moving_unit.q and r == self.moving_unit.r):
+            hx, hy = hex_to_pixel(q, r, h)
+            pts = flat_hex_corners(hx, hy, h - 2)
+            occupied = any(u.q == q and u.r == r
+                           for u in self.placed if u is not self.moving_unit)
+            colour = "#ff444422" if occupied else "#ffcc4422"
+            self.drag_hi_id = self.canvas.create_polygon(
+                pts, outline=self.PAL["accent"],
+                fill=colour, width=2, tags="draghighlight")
+
+    def _on_canvas_move_drop(self, event: tk.Event):
+        if self.drag_label:
+            self.drag_label.destroy()
+            self.drag_label = None
+        if self.drag_hi_id:
+            self.canvas.delete(self.drag_hi_id)
+            self.drag_hi_id = None
+
+        unit = self.moving_unit
+        self.moving_unit = None
+        if not unit:
+            return
+
+        ccx = self.canvas.canvasx(event.x)
+        ccy = self.canvas.canvasy(event.y)
+        q, r, _ = nearest_hex(ccx, ccy, self.hex_size)
+        if (not in_grid(q, r)
+                or (q == unit.q and r == unit.r)
+                or any(u.q == q and u.r == r for u in self.placed if u is not unit)):
+            return  # off-grid, same hex, or occupied — cancel
+
+        unit.q, unit.r = q, r
+        if unit.canvas_id:
+            self.canvas.delete(unit.canvas_id)
+            unit.canvas_id = None
+        self._render_unit(unit)
         self._refresh_hi()
         self._update_sel()
 
