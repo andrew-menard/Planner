@@ -577,12 +577,16 @@ class HexPlannerApp:
 
         if not stack:
             hit = None
-        elif self.selected in stack:
-            # Cycle to the next unit in the stack
-            idx = stack.index(self.selected)
-            hit = stack[(idx + 1) % len(stack)]
-        else:
+        elif len(stack) == 1:
             hit = stack[0]
+        else:
+            # Select the token whose rendered centre is closest to the click.
+            hx, hy   = hex_to_pixel(q, r, self.hex_size)
+            _, offs  = self._token_layout(len(stack))
+            hit = min(
+                zip(stack, offs),
+                key=lambda p: (cx - (hx + p[1][0])) ** 2 + (cy - (hy + p[1][1])) ** 2,
+            )[0]
 
         self.selected = hit
         self._refresh_hi()
@@ -623,7 +627,7 @@ class HexPlannerApp:
             pts = flat_hex_corners(hx, hy, h - 2)
             self.drag_hi_id = self.canvas.create_polygon(
                 pts, outline=self.PAL["accent"],
-                fill="#ffcc4422", width=2, tags="draghighlight")
+                fill="#ffcc44", width=2, tags="draghighlight")
 
     def _on_canvas_move_drop(self, event: tk.Event):
         if self.drag_label:
